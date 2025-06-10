@@ -8,16 +8,11 @@ os.environ["KERAS_BACKEND"] = "tensorflow"
 
 import keras
 
-import numpy as np
 import pandas as pd
-import tensorflow as tf
-import Plotting as plots
-import matplotlib.pyplot as plt
+from main_dir.Methods import Plotting as plots
 
-from VAE import VAE
-from keras import ops
-from keras import layers
-from Data_Options import data_options
+from main_dir.Methods.VAE import VAE
+from main_dir.Methods.Data_Options import data_options
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 

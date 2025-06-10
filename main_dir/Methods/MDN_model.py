@@ -6,7 +6,6 @@ import numpy as np
 import joblib
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
-import MDN as mdn
 import log_ratio as logratio
 
 from numpy.polynomial import Polynomial
@@ -30,8 +29,8 @@ class Model:
 
         self.preprocessor = joblib.load(self.model_path / "preprocessor.pkl")
         self.keras_model = tf.keras.models.load_model(self.model_path / f"model",
-                                                      custom_objects={"MDN": mdn.MDN,
-                                                                      "mdn_loss_func": mdn.get_mixture_loss_func(
+                                                      custom_objects={"MDN": MDN.MDN,
+                                                                      "mdn_loss_func": MDN.get_mixture_loss_func(
                                                                           self.output_dim, self.components)})
 
         print(f"Loaded model '{self.model_name}'")
@@ -103,7 +102,7 @@ class Model:
         means = np.swapaxes(np.array([component.mean().numpy() for component in mixture.components]), 0, 1)
         var = np.swapaxes(np.array([component.variance().numpy() for component in mixture.components]), 0, 1)
         logits = mixture.cat.logits.numpy()
-        probs = np.array([mdn.softmax(logit) for logit in logits])
+        probs = np.array([MDN.softmax(logit) for logit in logits])
         df_mean = pd.DataFrame(means.reshape(-1, self.output_dim), columns=self.outputs)
         df_var = pd.DataFrame(var.reshape(-1, self.output_dim), columns=["var_" + out for out in self.outputs])
 

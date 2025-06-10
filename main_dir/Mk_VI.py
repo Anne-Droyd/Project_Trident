@@ -5,22 +5,18 @@ Going to try make a simple double mixture network
 import keras
 import pickle
 
-import MDN as mdn
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import keras_tuner as kt
-import Plotting as plots
+from main_dir.Methods import Plotting as plots
 import matplotlib.pyplot as plt
 import tensorflow_probability as tfp
 from sklearn.preprocessing import StandardScaler
 
-from MDN import MDN
-from scipy.stats import norm
-from keras.layers import Dropout
-from Data_Options import data_options
-from keras import callbacks, layers, ops
-from Linear_Methods import Linear_methods as linear
+from main_dir.Methods.MDN import MDN
+from main_dir.Methods.Data_Options import data_options
+from keras import callbacks, layers
+from main_dir.Archive.Linear_Methods import Linear_methods as linear
 
 
 tfd = tfp.distributions
@@ -96,7 +92,7 @@ def main():
     N_HIDDEN = 512
     N_MIXES = 20
     optimizer = keras.optimizers.Adam(learning_rate=1e-3, clipnorm=1.0)
-    loss_func = mdn.MDNLoss(output_dim, N_MIXES)
+    loss_func = MDN.MDNLoss(output_dim, N_MIXES)
 
 
     path = "C:/Users/Matth/Documents/GitHub/first_research_project/.venv/Project_first_model/models/"
