@@ -17,14 +17,6 @@ def elu_plus_one_plus_epsilon(x):
     NaN in loss."""
     return elu(x) + 1 + K.epsilon()
 
-def entropy_regularization(pi, weight=0.01):
-    """
-    A function to add the sum of the pis * log of the pis along each row (shannon entropy)
-    while adding a small value to stop log(0). This should discourage uncertain distributions
-    """
-    entropy = -tf.reduce_sum(pi * tf.math.log(pi + 1e-8), axis=-1)
-    return -weight * entropy
-
 def softmax(w,temperature=1.0):
     """
     My edit: I added the temperature variable which was excluded from the github.
@@ -35,17 +27,53 @@ def softmax(w,temperature=1.0):
     Arguments:
     w -- a list or numpy array of logits
     Keyword arguments:
-    t -- the temperature for to adjust the distribution (default 1.0)
+    temperature -- the temperature for to adjust the distribution (default 1.0)
     """
-    e = np.array(w/temperature)  # adjust temperature
+    e = np.array(w)/temperature  # adjust temperature
     e -= e.max()  # subtract max to protect from exploding exp values.
     e = np.exp(e)
     dist = e / np.sum(e)
     return dist
 
+def sample_from_output(params, output_dim, num_mixes, temp=1.0, sigma_temp=1.0):
+    """Sample from an MDN output with temperature adjustment.
+    This calculation is done outside of the Keras model using
+    Numpy.
+
+    Arguments:
+    params -- the parameters of the mixture model
+    output_dim -- the dimension of the normal models in the mixture model
+    num_mixes -- the number of mixtures represented
+
+    Keyword arguments:
+    temp -- the temperature for sampling between mixture components (default 1.0)
+    sigma_temp -- the temperature for sampling from the normal distribution (default 1.0)
+
+    Returns:
+    One sample from the the mixture model, that is a numpy array of length output_dim
+    """
+    assert len(params) == num_mixes + (output_dim * 2 * num_mixes), "The size of params needs to match the mixture configuration"
+    mus, sigs, pi_logits = split_mixture_params(params, output_dim, num_mixes)
+    pis = softmax(pi_logits, temperature=temp)
+    m = sample_from_categorical(pis)
+    # Alternative way to sample from categorical:
+    # m = np.random.choice(range(len(pis)), p=pis)
+    mus_vector = mus[m * output_dim:(m + 1) * output_dim]
+    sig_vector = sigs[m * output_dim:(m + 1) * output_dim]
+    scale_matrix = np.identity(output_dim) * sig_vector  # scale matrix from diag
+    cov_matrix = np.matmul(scale_matrix, scale_matrix.T)  # cov is scale squared.
+    cov_matrix = cov_matrix * sigma_temp  # adjust for sigma temperature
+    sample = np.random.multivariate_normal(mus_vector, cov_matrix, 1)
+    return sample[0]
+
 class MDN(Layer):
     """
-    Using EXOMDN as jump off point
+    A Mixture Density Layer for Keras
+    cpmpercussion: Charles Martin (University of Oslo) 2018
+    https://github.com/cpmpercussion/keras-mdn-layer
+    Hat tip to [Omimo's Keras MDN layer](https://github.com/omimo/Keras-MDN)
+    for a starting point for this code.
+    Provided under MIT License
     """
 
     def __init__(self, output_dimension, num_mixtures, **kwargs):
@@ -96,14 +124,18 @@ def get_mixture_loss_func(output_dim, num_mixes):
                                                                          num_mixes],
                                              axis=-1, name='mdn_coef_split')
         # Construct the mixture models
-
+        #this is the tensorflow version of what I did in my main script
+        #isolate pi, mu, sigma
         cat = tfd.Categorical(logits=out_pi)
         component_splits = [output_dim] * num_mixes
         mus = tf.split(out_mu, num_or_size_splits=component_splits, axis=1)
         sigs = tf.split(out_sigma, num_or_size_splits=component_splits, axis=1)
+        #rebuild gaussians
         coll = [tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale) for loc, scale
                 in zip(mus, sigs)]
+        #blend them into mixture
         mixture = tfd.Mixture(cat=cat, components=coll)
+        #negative log likelihood loss
         loss = mixture.log_prob(y_true)
         loss = tf.negative(loss)
         loss = tf.reduce_mean(loss)
@@ -113,68 +145,39 @@ def get_mixture_loss_func(output_dim, num_mixes):
     with tf.name_scope('MDN'):
         return mdn_loss_func
 
-def get_winner_takes_all_loss(output_dim, num_mixes):
-    def loss(y_true, y_pred):
-        out_mu, out_sigma, out_pi = tf.split(
-            y_pred,
-            num_or_size_splits=[num_mixes * output_dim,
-                                num_mixes * output_dim,
-                                num_mixes],
-            axis=-1
-        )
+#had a winner takes all loss function but wasn't really an MDN after so went on to include entropy
 
-        mus = tf.reshape(out_mu, [-1, num_mixes, output_dim])
-        sigs = tf.nn.softplus(tf.reshape(out_sigma, [-1, num_mixes, output_dim])) + 1e-6
-        pi = tf.nn.softmax(out_pi)
+def mdn_loss_with_entropy(output_dim,num_mixes,entropy_weight=1e-3,temperature=1):
+    """
+    the MDN loss function but the certainty of the model can be altered through entropy weight
+    """
+    def mdn_loss_entropy_func(y_true,y_pred):
+        # Split the inputs into parameters
+        out_mu, out_sigma, out_pi = tf.split(y_pred, num_or_size_splits=[num_mixes * output_dim,
+                                                                         num_mixes * output_dim,
+                                                                         num_mixes],
+                                             axis=-1, name='mdn_coef_split')
+        # Construct the mixture models
+        # this is the tensorflow version of what I did with numpy in my main script
+        # isolate pi, mu, sigma
+        cat = tfd.Categorical(logits=out_pi)
+        component_splits = [output_dim] * num_mixes
+        mus = tf.split(out_mu, num_or_size_splits=component_splits, axis=1)
+        sigs = tf.split(out_sigma, num_or_size_splits=component_splits, axis=1)
+        # rebuild gaussians
+        coll = [tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale) for loc, scale
+                in zip(mus, sigs)]
+        # blend them into mixture
+        mixture = tfd.Mixture(cat=cat, components=coll)
 
-        mvn = tfd.MultivariateNormalDiag(loc=mus, scale_diag=sigs)
-        log_probs = mvn.log_prob(tf.expand_dims(y_true, 1))  # [batch, num_mixes]
+        loss = mixture.log_prob(y_true)
+        loss = tf.negative(loss)
+        # adding a term to penalise uncertainty, so 1 gaussian is most likely
+        pi_after_softmax = np.apply_along_axis(softmax, 1, out_pi, temperature=temperature)
+        entropy = -tf.reduce_mean(tf.reduce_sum(pi_after_softmax * tf.math.log(pi_after_softmax + 1e-8), axis=-1))
+        loss = -tf.reduce_mean(loss) - entropy_weight * entropy
+        return loss
 
-        # Posterior responsibility: p(component | y_true)
-        log_pi = tf.math.log(pi + 1e-8)
-        log_responsibility = log_pi + log_probs
-        top_component = tf.argmax(log_responsibility, axis=1, output_type=tf.int32)
-        batch_idx = tf.range(tf.shape(y_true)[0], dtype=tf.int32)
-        idx = tf.stack([batch_idx, top_component], axis=1)
-        chosen_mu = tf.gather_nd(mus, idx)
-        chosen_sigma = tf.gather_nd(sigs, idx)
-        chosen_dist = tfd.MultivariateNormalDiag(loc=chosen_mu, scale_diag=chosen_sigma)
-        return tf.reduce_mean(-chosen_dist.log_prob(y_true))
-    return loss
-
-@keras.saving.register_keras_serializable()
-class MDNLossWithEntropy(tf.keras.losses.Loss):
-    def __init__(self, output_dim, num_mixes, entropy_weight=1e-3, name="mdn_loss_with_entropy"):
-        super().__init__(name=name)
-        self.output_dim = output_dim
-        self.num_mixes = num_mixes
-        self.entropy_weight = entropy_weight
-
-    def call(self, y_true, y_pred):
-        num_mixes = self.num_mixes
-        output_dim = self.output_dim
-
-        out_mu, out_sigma, out_pi = tf.split(
-            y_pred,
-            [num_mixes * output_dim, num_mixes * output_dim, num_mixes],
-            axis=-1
-        )
-
-        out_mu = tf.reshape(out_mu, [-1, num_mixes, output_dim])
-        out_sigma = tf.reshape(out_sigma, [-1, num_mixes, output_dim])
-        out_pi = tf.nn.softmax(out_pi)
-
-        cat = tfd.Categorical(probs=out_pi)
-        components = tfd.MultivariateNormalDiag(loc=out_mu, scale_diag=out_sigma)
-        mixture = tfd.MixtureSameFamily(mixture_distribution=cat, components_distribution=components)
-
-        log_likelihood = mixture.log_prob(y_true)
-        entropy = -tf.reduce_mean(tf.reduce_sum(out_pi * tf.math.log(out_pi + 1e-8), axis=-1))
-        return -tf.reduce_mean(log_likelihood) - self.entropy_weight * entropy
-
-    def get_config(self):
-        return {
-            "output_dim": self.output_dim,
-            "num_mixes": self.num_mixes,
-            "entropy_weight": self.entropy_weight
-        }
+    # Actually return the loss function
+    with tf.name_scope('MDN'):
+        return mdn_loss_entropy_func

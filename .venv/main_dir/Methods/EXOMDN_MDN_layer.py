@@ -1,5 +1,4 @@
 """
-Just copied the github of https://github.com/philippbaumeister/exomdn for this
 A Mixture Density Layer for Keras
 cpmpercussion: Charles Martin (University of Oslo) 2018
 https://github.com/cpmpercussion/keras-mdn-layer
