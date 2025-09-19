@@ -10,7 +10,7 @@ import numpy as np
 from os import listdir
 from os.path import isfile, join
 from sklearn.model_selection import train_test_split
-from tkinter.filedialog import askdirectory, askopenfile
+from tkinter.filedialog import askdirectory, askopenfilename
 # from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 class data_options:
@@ -27,8 +27,11 @@ class data_options:
 
         for file in files:
             file = file.split(".", 1)[0]
-            iteration = int(file.split("_")[-1])
-            iterations.append(iteration)
+            try:
+                iteration = int(file.split("_")[-1])
+                iterations.append(iteration)
+            except ValueError:
+                continue
         iterations.sort(reverse=True)
         return iterations[0] + 1
 
@@ -69,16 +72,14 @@ class data_options:
                 files_list.append(files)
         if len(files_list) == 1:
             file = files_list[0]
-            if file.endswith(".csv"):
-                type = "csv"
-            elif file.endswith(".dat"):
-                type = "dat"
+            path = os.path.join(self.save_dir, file)
         else:
-            file = askopenfile(mode="r",filetypes=[("*.dat","*.csv")])
-        path = self.save_dir+file
-        if type == "csv":
+            file = askopenfilename(initialdir=self.save_dir,
+                                   filetypes=[("Data files", "*.dat *.csv"), ("DAT files", "*.dat"), ("CSV files", "*.csv")])
+            path = file
+        if file.endswith(".csv"):
             data = pd.read_csv(path)
-        elif type == "dat":
+        elif file.endswith(".dat"):
             data = pd.read_csv(path, delimiter="\t")
         return data
 

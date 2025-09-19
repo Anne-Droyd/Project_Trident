@@ -139,6 +139,7 @@ def predict_from_x(input_model, output_model, regressor, x_tensor, device):
 
 def main():
     data = data_ops.get_data()
+    data = data.dropna(subset=["matm","mdeep"])
     # could also use data = data.sample(frac=1).reset_index(drop=True)
     data = shuffle(data,random_state=42)
     data = data.rename(columns={"req": "radius", "Teq": "temp"})
@@ -162,7 +163,7 @@ def main():
     NN_history_name = f"NN_history_{NN_iteration}.csv"
     output_history_name = f"output_history_{output_iteration}.csv"
 
-    y_col = ["m_core", 'zatm', 'zdeep']
+    y_col = ["m_core", "matm", "mdeep",'zatm', 'zdeep']
     x_col = ["mass","radius","temp"]
 
     train_x, train_y = data_ops.get_xy(train, y_col, x_col)

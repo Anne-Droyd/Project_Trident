@@ -1,6 +1,12 @@
 """
-Rebuilding from scratch to make sure everything makes sense
+Clean version
 """
+import warnings
+from importlib.metadata import metadata
+from tkinter.filedialog import askopenfile, askopenfilename
+
+import h5py
+import json
 import keras
 import numpy as np
 import pandas as pd
@@ -13,11 +19,9 @@ from main_dir.Methods import Plotting as plots
 from keras import callbacks, Sequential, regularizers
 from main_dir.Methods.Data_Options import data_options
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
-# from main_dir.Methods.EXOMDN_MDN_layer import get_mixture_loss_func as MDNLoss
-# from main_dir.Methods.EXOMDN_MDN_layer import get_winner_takes_all_loss as Winner_Loss
-# from main_dir.Methods.EXOMDN_MDN_layer import MDN, softmax, elu_plus_one_plus_epsilon, get_mixture_loss_func
-
-
+from main_dir.Methods.MDN import get_mixture_loss_func as MDNLoss
+from main_dir.Methods.MDN import mdn_loss_with_entropy as EntropyLoss
+from main_dir.Methods.MDN import MDN, softmax, sample_from_output
 
 def unpack_mdn_predictions(predictions, output_dim, num_mixtures):
     out_mu, out_sigma, out_pi = np.split(predictions,indices_or_sections=[
@@ -32,217 +36,346 @@ def unpack_mdn_predictions(predictions, output_dim, num_mixtures):
     return mus, sigmas, pi
 
 def sample_from_mixture(mu, sigma, pi, num_samples=1):
-    samples = []
+    """
+    gather N samples per predicted output
+    pi must be softmaxed first not in logits
+    """
+    all_samples = []
     for i in range(mu.shape[0]):  # for each test point
-        component = np.random.choice(mu.shape[1], p=pi[i])
-        sample = np.random.normal(loc=mu[i, component], scale=sigma[i, component])
-        samples.append(sample)
-    return np.array(samples)
+        samples =[]
+        for _ in range(num_samples):
+            #pick a weighted random mu from the row given the certainty of the gaussian
+            component_idx = np.random.choice(mu.shape[1], p=pi[i])
+            sample = np.random.normal(loc=mu[i, component_idx], scale=sigma[i, component_idx])
+            samples.append(sample)
+        all_samples.append(samples)
+    return np.array(all_samples)
+
+class MDN_trainer():
+    """
+    Made this a seperate class so I can create new instances without recreating the base data class allowing for simpler
+    experimentation and iterating. Initializing creates the base model, train
+    """
+    def __init__(self,
+                 input_dimension,
+                 output_dimension,
+                 number_mixtures=20,
+                 number_layers=4,
+                 number_nodes=60,
+                 activation="relu",
+                 bias_initalizer = None,
+                 kernel_regularizer = None,
+                 bias_regularizer = None,
+                 activity_regularizer = None,
+                 optimizer=Adam,
+                 learning_rate=0.001,
+                 loss_function=MDNLoss,
+                 **kwargs):
+
+        self.input_dim =    input_dimension
+        self.output_dim =   output_dimension
+        self.num_mixes =    number_mixtures
+        self.num_layers =   number_layers
+        self.num_nodes =    number_nodes
+        self.activ =        activation
+        self.bias_init =    bias_initalizer
+        self.bias_reg =     bias_regularizer
+        self.kernel_reg =   kernel_regularizer
+        self.act_reg =      activity_regularizer
+        self.lr =           learning_rate
+        self.optim =        optimizer(learning_rate=self.lr)
+        self.loss =         loss_function(self.output_dim,self.num_mixes)
+
+        self.create_model()
+
+
+    def create_model(self):
+        self.model = Sequential()
+        for layer_num in range(self.num_layers):
+            self.model.add(Dense(self.num_nodes, input_shape=(self.input_dim,), activation=self.activ,
+                            bias_initializer=self.bias_init, kernel_regularizer=self.kernel_reg,
+                            bias_regularizer=self.bias_reg, activity_regularizer=self.act_reg))
+        self.model.add(MDN(self.output_dim, self.num_mixes))
+        self.model.compile(loss=self.loss, optimizer=self.optim)
+
+
+    def fit_model(self,
+                    train_x,
+                    train_y,
+                    valid_x,
+                    valid_y,
+                    epochs=50,
+                    batch_size=100,
+                    **kwargs):
+
+        self.history = self.model.fit(train_x,
+                                      train_y,
+                                      epochs=epochs,
+                                      batch_size=batch_size,
+                                      validation_data=(valid_x, valid_y),
+                                      callbacks=[
+                                callbacks.EarlyStopping(monitor="val_loss", patience=8, restore_best_weights=True),
+                                callbacks.ReduceLROnPlateau(monitor="val_loss", patience=4)
+                                ])
+
+        return self.history, self.model
+
+class MK_VI_MDN():
+
+    def __init__(self,
+                 input_names,
+                 output_names,
+                 dataset="VR_DATA", #currently only support "VR_DATA" or "BAU", will include "live" later as default
+                 scaler = StandardScaler(),
+                 file_prefix="MDN", # What the model file name will contain
+                 select_model_path=False, #option to select the directory for the model, if false its default
+                 select_history_path=False, #option to select the directory for the history, if false its default
+                 **kwargs):
+
+        x_col_no_k2 = ["mass","radius","temp"]
+        x_col_k2 = ["mass","radius","temp","k2"]
+        #if dataset="live":
+
+        self.scaler= scaler
+        self.file_prefix = file_prefix
+        assert dataset == "VR_DATA" or dataset == "BAU", "Unknown dataset"
+
+        self.data_ops = data_options(type=dataset)
+        self.data = self.data_ops.get_data()
+
+        self.data = self.data.dropna(subset=["matm", "mdeep"])
+
+        if dataset=="VR_DATA":
+            self.data.rename(columns={"req": "radius", "Teq": "temp"})
+        elif dataset=="BAU":
+            self.data.rename(columns={'planet_mass': 'mass', 'planet_radius': 'radius', 'T_eq': 'temp'})
+
+        self.train, self.test, self.valid = self.data_ops.partition_data(self.data,
+                                                                         train_frac=0.8,
+                                                                         test_frac=0.1,
+                                                                         valid_frac=0.1)
+        self.x_col, self.y_col = input_names, output_names
+        self.train_x, self.train_y = self.data_ops.get_xy(self.train, self.y_col, self.x_col)
+        self.test_x, self.test_y = self.data_ops.get_xy(self.test, self.y_col, self.x_col)
+        self.valid_x, self.valid_y = self.data_ops.get_xy(self.valid, self.y_col, self.x_col)
+
+        self.input_dimension, self.output_dimension = self.train_x.shape[1], self.train_y.shape[1]
+
+        if dataset != "live":
+            self.x_scaler = self.scaler.__class__()
+            self.y_scaler = self.scaler.__class__()
+            self.train_x = self.x_scaler.fit_transform(self.train_x)
+            self.train_y = self.y_scaler.fit_transform(self.train_y)
+            # Do not refit the transform
+            self.valid_x = self.x_scaler.transform(self.valid_x)
+            self.valid_y = self.y_scaler.transform(self.valid_y)
+            self.test_x = self.x_scaler.transform(self.test_x)
+            self.test_y = self.y_scaler.transform(self.test_y)
+        else:
+            if x_col==x_col_no_k2:
+                self.x_scaler = load_no_k2_scaler()
+                self.test_x = self.x_scaler.transform(self.test_x)
+            elif x_col==x_col_k2:
+                self.x_scaler = load_k2_scaler()
+                self.test_x = self.x_scaler.transform(self.test_x)
+
+
+        if select_model_path == False:
+            self.model_folder_path = "C:/Users/Matth/Documents/Leiden University/Project/models/MDN/"
+
+        elif select_model_path == True:
+            self.model_folder_path = askdirectory()
+
+        if select_history_path == False:
+            self.history_path = "C:/Users/Matth\Documents/Leiden University/Project/Histories/MDN/"
+
+        elif select_history_path == True:
+            self.history_path = askdirectory()
+
+        self.current_iteration = self.data_ops.get_iteration(self.model_folder_path, file_prefix=self.file_prefix)
+
+
+    def train_model(self,
+                    number_mixtures=20,
+                    number_layers=4,
+                    number_nodes=60,
+                    activation="relu",
+                    bias_initalizer = None,
+                    kernel_regularizer = None,
+                    bias_regularizer = None,
+                    activity_regularizer = None,
+                    optimizer=Adam,
+                    learning_rate=0.001,
+                    loss_function=MDNLoss,
+                    epochs = 50,
+                    batch_size = 100,
+                    **kwargs):
+        self.num_mixes = number_mixtures
+        trainer = MDN_trainer(input_dimension = self.input_dimension,
+                                output_dimension = self.output_dimension,
+                                number_mixtures = number_mixtures,
+                                number_layers = number_layers,
+                                number_nodes = number_nodes,
+                                activation = activation,
+                                bias_initalizer = bias_initalizer,
+                                kernel_regularizer = kernel_regularizer,
+                                bias_regularizer = bias_regularizer,
+                                activity_regularizer = activity_regularizer,
+                                optimizer = optimizer,
+                                learning_rate = learning_rate,
+                                loss_function = loss_function)
+        history, model =trainer.fit_model(self.train_x,
+                                                self.train_y,
+                                                self.valid_x,
+                                                self.valid_y,
+                                                epochs,
+                                                batch_size)
+        Model_save_name = f"{self.file_prefix}_model_{self.current_iteration}.h5"
+        history_name = f"{self.file_prefix}_history_model_{self.current_iteration}.csv"
+        #add metadata to file for easy retracability
+        model.save(self.model_folder_path + Model_save_name,include_optimizer=False)
+        # then open and add metadata
+        with h5py.File(self.model_folder_path + Model_save_name, "a") as file:
+            file.attrs["input_dimension"] = self.input_dimension
+            file.attrs["output_dimension"] = self.output_dimension
+            file.attrs["number_of_mixtures"] = number_mixtures
+            file.attrs["input_parameters"] = json.dumps(self.x_col)
+            file.attrs["output_parameters"] = json.dumps(self.y_col)
+            file.attrs["number_of_layers"] = number_layers
+            file.attrs["number_of_nodes"] = number_nodes
+            file.attrs["activation"] = str(activation)
+            file.attrs["optimizer"] = str(optimizer)
+            file.attrs["learning_rate"] = learning_rate
+            file.attrs["loss_function"] = str(loss_function)
+            file.attrs["bias_initalizer"] = str(bias_initalizer)
+            file.attrs["kernel_regularizer"] = str(kernel_regularizer)
+            file.attrs["bias_regularizer"] = str(bias_regularizer)
+            file.attrs["activity_regularizer"] = str(activity_regularizer)
+
+
+        history_df = pd.DataFrame(history.history)
+        # Save to CSV
+        history_df.to_csv(self.history_path + history_name, index=False)
+
+        return model, history_df
+
+    def load_model(self,input_names,output_names,model_name = "Select"):
+        """
+        Model 1 will be mass, radius, temp as inputs and whatever outputs for live service
+        Model 2 will include K2 in the inputs as well as whatever outputs for model 1
+        Select will allow the user to pick which model and history from their files
+        """
+        model_name = model_name.lower()
+        if model_name == "mdn_model_1":
+            Model_save_name = ""
+            history_name = ""
+
+        elif model_name == "mdn_model_2":
+            Model_save_name = ""
+            history_name = ""
+
+        elif model_name == "select":
+            Model_save_name = askopenfilename()
+            history_name = askopenfilename()
+
+        elif model_name =="latest":
+            if self.current_iteration > 1:
+                latest_iteration = self.current_iteration-1
+            Model_save_name = f"{self.file_prefix}_model_{latest_iteration}.h5"
+            history_name = f"{self.file_prefix}_history_model_{latest_iteration}.csv"
+
+        with h5py.File(self.model_folder_path + Model_save_name, "r") as file:
+            if not file.attrs["input_dimension"]:
+                raise warnings.warn("Metadata missing from the model file.")
+                input_dim, output_dim = len(input_names), len(output_names)
+                metadata_indicator = False
+            else:
+                metadata_indicator = True
+                input_dim = file.attrs["input_dimension"]
+                output_dim = file.attrs["output_dimension"]
+                self.num_mixes = file.attrs["number_of_mixtures"]
+                x_col = json.loads(file.attrs["input_parameters"])
+                y_col = json.loads(file.attrs["output_parameters"])
+                loss = file.attrs["loss_function"]
+                optim = file.attrs["optimizer"]
+                lr = file.attrs["learning_rate"]
+                assert x_col == input_names, f"Inputs don't match:\n data input {x_col},\n model input {input_names}"
+                assert y_col == output_names, f"Outputs don't match:\n data output {y_col},\n model output {output_names}"
+
+        optim=optim(learning_rate=lr)
+
+        model = keras.models.load_model(
+            self.model_folder_path + Model_save_name,
+            custom_objects={"MDN": MDN}
+        )
+        model.compile(loss=loss(self.output_dimension, self.num_mixes), optimizer=optim)
+        #load metadata if available
+
+        if not metadata_indicator:
+            print(model.summary())
+            print("Input shape :", model.input_shape())
+            print("Output shape :", model.output_shape())
+            print("input dim: ", input_dim)
+            print("output dim: ", output_dim)
+            if input_dim == model.input_shape()[1]:
+                print("Input dimensions match")
+            else:
+                raise ValueError("Input dimensions do not match")
+            if output_dim == model.output_shape()[1]:
+                print("Output dimensions match")
+            else:
+                raise ValueError("Output dimensions do not match")
+
+        history_df = pd.read_csv(self.history_path + history_name)
+
+        return model, history_df
+
+    def prediction(self,model):
+        predictions = model.predict(self.test_x)
+        mu, sigma, pi = unpack_mdn_predictions(predictions, self.output_dimension, self.num_mixes)
+        mu_flat = mu.reshape(-1, self.output_dimension)
+        mu = self.y_scaler.inverse_transform(mu_flat)
+        mu = mu.reshape(-1, self.num_mixes, self.output_dimension)
+
+        scale = self.y_scaler.scale_
+        sigma = sigma * scale.reshape(1, 1, -1)
+
+        pi = np.apply_along_axis(softmax, 1, pi, temperature=1)
+        return mu, sigma, pi
 
 def main():
-    data_ops = data_options(type="VR_DATA")
-    data = data_ops.get_data()
-    train, test, valid = data_ops.partition_data(data,train_frac=0.8,test_frac=0.1,valid_frac=0.1)
 
-    data_ops = data_options(type="BAU")
-    bau=data_ops.get_data()
-
-    df_a = data.rename(columns={"req":"radius","Teq":"temp"})
-    df_b = bau.rename(columns={'planet_mass': 'mass', 'planet_radius': 'radius', 'T_eq': 'temp'})
-
-    # expansion_factor = 0.9
-    # train = train.sample(n=(int(expansion_factor * len(train))), replace=True, random_state=42)
-
-    #Index(['planet_mass', 'planet_radius', 'T_eq', 'log_d_mantle_core',
-      #  'log_m_mantle_core', 'log_d_atmosphere_core', 'log_m_atmosphere_core',
-      #  'log_d_water_core', 'log_m_water_core'],
-      # dtype='object')
-
-    # Index(['m_core', 'zatm', 'zatm0', 'zatm1', 'zdeep', 'zdeep0', 'zdeep1',
-    #        'p_ppt', 'req', 'mass', 'lum', 'Teq', 'p_rot', 'k2',"test","density"],
-
-    #BAU data
-        #MKVIII relu, scaled
-        #MKVII gelu instead of relu
-        #MKVI relu
-    #VR data
-        # MK_I 120 mix 50 batch 60 nodes 4 layers relu6 random normal bias init no kern/bias/act reg
-            # loss 3.81 not great flat predictions on multiple
-        # MK_II act reg 1e-2
-            # loss 5.19 not good all predictions flat
-        # MK_III act reg 1e-7
-            # loss 3.82 same as without
-        # MK_IV act reg 1e-4
-            # loss 4.12 mid
-        # MK_V bias reg 1e-2
-            # loss 3.83
-        # MK_VI bias reg 1e-7
-            # loss 3.79
-        # MK_VII bias reg 1e-4
-            # loss 3.81
-        # MK_VIII kernel reg 1e-2
-            # loss
-        # MK_IX kernel reg 1e-7
-            # loss
-        # MK_X kernel reg 1e-4
-            # loss
-        # MK_XI
-        # MK_XII
-        # MK_XIII
-        # MK_XIV
-        # MK_XVI
-        #   mcore, zatm, zdeep, no lum
-        #   5 mix, 60 nodes
-        #biggest_MKXII
-            #1.7 loss
-            # 120 mix, 60 nodes
-            #     y_col = ["m_core",'zatm0', 'zatm1', 'zdeep0', 'zdeep1']
-            #     x_col = ["mass","req","Teq","lum"]
-    model_folder_path = "C:/Users/Matth/Documents/Leiden University/Project/models/MDN/"
-    history_path = "C:/Users/Matth\Documents/Leiden University/Project/Histories/MDN/"
-
-    # expansion_factor = 0.9
-    # train = train.sample(n=(int(expansion_factor * len(train))), replace=False)
-
-    iteration = "230"
-    Model_save_name = f"MDN_model_{iteration}.h5"
-    history_name = f"history_MK_{iteration}.csv"
-    train_new_model = "n"
-
-    epochs = 500
-
+    epochs = 50
     lr = 0.001
-
-    num_mixtures_1 = 120
+    num_mixtures_1 = 20
     batch_size_1 = 1000
     num_hidden_nodes_1 = 60
-
-    num_mixtures_2 = 50
-    batch_size_2 = 1000
-    num_hidden_nodes_2 = 64
-
-    num_hidden_nodes_3 = 32
 
     #model params
     bias_init="zeros"
     activation="relu"
-    kernel_reg = None
-    bias_reg = None
-    act_reg = None
-    # kernel_reg = regularizers.L1L2(l1=2e-2, l2=1e-2)
-    L1=[0,1e-6,1e-5,1e-4,1e-3,1e-2]
-    L2=[0,1e-6,1e-5,1e-4,1e-3,1e-2]
-    # bias_reg=regularizers.L2(1e-2)
-    # act_reg=regularizers.L2(1e-2)
-    # bias_reg=[None,regularizers.L1(l1=0.01),regularizers.L2(1e-7),regularizers.L1L2(l1=0.0, l2=0.0)]
-    # act_reg=[None,regularizers.L1(l1=0.01),regularizers.L2(1e-7),regularizers.L1L2(l1=0.0, l2=0.0)]
 
-    # y_col = ["log_d_mantle_core","log_d_atmosphere_core","log_d_water_core","log_m_mantle_core","log_m_atmosphere_core","log_m_water_core"]
-    # x_col = ["planet_mass","planet_radius","T_eq"]
+    y_col = ["mdeep"]
+    x_col = ["mass","req","Teq"]
 
-    y_col = ["m_core", 'zatm', 'zdeep']
-    x_col = ["mass","req","Teq","k2"]
+    optimizer = Adam(learning_rate=lr,clipvalue=1)
 
-    train_x, train_y = data_ops.get_xy(train, y_col, x_col)
-    test_x, test_y = data_ops.get_xy(test, y_col, x_col)
-    valid_x, valid_y = data_ops.get_xy(valid, y_col, x_col)
+    main_mdn_class = MK_VI_MDN(input_names=x_col,output_names=y_col)
 
-    x_scaler = StandardScaler()
-    y_scaler = StandardScaler()
-    train_x = x_scaler.fit_transform(train_x)
-    train_y = y_scaler.fit_transform(train_y)
-    # Do not refit the transform
-    valid_x = x_scaler.transform(valid_x)
-    valid_y = y_scaler.transform(valid_y)
+    print(main_mdn_class.train_x)
+    print(main_mdn_class.train_y)
 
-    # test_x = pd.DataFrame([[3.2,1.2,876]],columns=x_col)
-    # test_y = pd.DataFrame([[-7.22,-7.6,-2.11,-15.27,-2.73,-4.76]],columns=y_col)
-    test_x = x_scaler.transform(test_x)
+    model, history = main_mdn_class.train_model(epochs=1,learning_rate=1e-6)
 
-    input_dim = train_x.shape[1]
-    output_dim = train_y.shape[1]
-    optimizer = Adam(learning_rate=lr)
-
-    #architecture 4 layers
-    if train_new_model == "yes" or train_new_model == "y":
-        model = Sequential()
-        model.add(Dense(num_hidden_nodes_1,input_shape=(input_dim,),activation=activation,
-                        bias_initializer=bias_init, kernel_regularizer=kernel_reg,
-                        bias_regularizer=bias_reg, activity_regularizer=act_reg))
-        model.add(Dense(num_hidden_nodes_1,activation=activation,
-                        bias_initializer=bias_init, kernel_regularizer=kernel_reg,
-                        bias_regularizer=bias_reg, activity_regularizer=act_reg))
-        model.add(Dense(num_hidden_nodes_1,activation=activation,
-                        bias_initializer=bias_init, kernel_regularizer=kernel_reg,
-                        bias_regularizer=bias_reg, activity_regularizer=act_reg))
-        model.add(Dense(num_hidden_nodes_1,activation=activation,
-                        bias_initializer=bias_init, kernel_regularizer=kernel_reg,
-                        bias_regularizer=bias_reg, activity_regularizer=act_reg))
-        model.add(MDN(output_dim,num_mixtures_1))
-        model.compile(loss=MDNLoss(output_dim,num_mixtures_1), optimizer=optimizer)
-
-        history = model.fit(train_x,train_y,epochs=epochs,batch_size=batch_size_1, validation_data = (valid_x,valid_y),
-                callbacks=[callbacks.EarlyStopping(monitor="val_loss", patience=8, restore_best_weights=True),
-                callbacks.ReduceLROnPlateau(monitor="val_loss",patience=4)
-                ])
-        model.save(model_folder_path+Model_save_name, include_optimizer=False)
-
-        history_df = pd.DataFrame(history.history)
-
-        # Save to CSV
-        history_df.to_csv(history_path + history_name, index=False)
-
-    else:
-        model = keras.models.load_model(
-            model_folder_path + Model_save_name,
-            custom_objects={"MDN":MDN}
-        )
-        model.compile(loss=MDNLoss(output_dim, num_mixtures_1), optimizer=optimizer)
+    mu, sigma, pi = main_mdn_class.prediction(model)
 
 
 
-    predictions = model.predict(test_x)
-    mu, sigma, pi = unpack_mdn_predictions(predictions, output_dim, num_mixtures_1)
-
-    mu_flat = mu.reshape(-1, output_dim)
-    mu = y_scaler.inverse_transform(mu_flat)
-    mu = mu.reshape(-1, num_mixtures_1, output_dim)
-
-    scale = y_scaler.scale_
-    sigma = sigma * scale.reshape(1, 1, -1)
-
-    # mu = np.clip(mu, 0, 1)
-    # mu[:, :, 0] = np.clip(mu[:, :, 0], 0, 0.5)
-
-    # scale = y_scaler.data_max_ - y_scaler.data_min_
-    # sigma = sigma * scale.reshape(1, 1, -1)
-
-    pi = np.apply_along_axis(softmax, 1, pi, temperature=1)
-
-    # mask = (pi >= 0.01) & np.all(sigma <= 0.5, axis=2) & np.all(sigma >= 0.005, axis=2)  # shape (batch_size, num_mixes)
-
-    # Apply the mask
-    # We keep the same shape but set invalid components' pi to zero
-    # pi = np.where(mask, pi, 0.0)
-
-    # # Optional: renormalize pi so it sums to 1 for each sample
-    # pi_sum = np.sum(pi, axis=1, keepdims=True)
-    # pi_sum = np.where(pi_sum == 0, 1.0, pi_sum)  # avoid divide-by-zero
-    # pi /= pi_sum
 
     means = np.sum(pi[..., np.newaxis] * mu, axis=1)
-    # map_indices = np.argmax(pi, axis=1)
     map_indices = np.argsort(pi, axis=1)[:,-1]
-    #
-    top5_indices = np.argsort(pi, axis=1)[:, -5:]  # last 5 = top 5 since argsort is ascending
-    # sigma_reduced = sigma.mean(axis=2)  # shape (batch_size, num_mixtures)
 
-    # Get index of mixture with lowest sigma for each sample
-    # lowest_sig_idx = np.argmin(sigma_reduced, axis=1)
-    # best_mean = mu[np.arange(mu.shape[0]), lowest_sig_idx, :]
-
-    # Step 2: Gather μ for those components
-    # This indexing will be a bit tricky with numpy
+    top5_indices = np.argsort(pi, axis=1)[:, -5:]
     batch_indices = np.arange(mu.shape[0])[:, None]  # shape (n_samples, 1)
     top5_mus = mu[batch_indices, top5_indices]  # shape (n_samples, 5, output_dim)
 
