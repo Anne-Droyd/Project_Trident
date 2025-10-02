@@ -35,7 +35,7 @@ class data_options:
         iterations.sort(reverse=True)
         return iterations[0] + 1
 
-    def __init__(self,use_default_folder="y",type="VR_DATA",computer="laptop"):
+    def __init__(self,use_default_folder="y",type="VR_DATA",default_data=False,computer="laptop"):
         if computer == "laptop":
             if type == "VR_DATA":
                 if use_default_folder == "y":
@@ -67,6 +67,17 @@ class data_options:
 
     def get_data(self):
         files_list=[]
+        if default_data == True:
+            for files in os.listdir(self.save_dir):
+                if files == "default.dat":
+                    files_list.append(files)
+            if len(files_list) > 1:
+                raise ValueError("Too many default files, returning none")
+                return None
+            file = files_list[0]
+            path = os.path.join(self.save_dir, file)
+            data = pd.read_csv(path, delimiter="\t")
+            return data
         for files in os.listdir(self.save_dir):
             if (files.endswith(".csv") or files.endswith(".dat")) and not (files.endswith("copy.csv") or files.endswith("copy.dat")):
                 files_list.append(files)
