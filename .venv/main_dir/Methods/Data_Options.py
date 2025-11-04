@@ -36,6 +36,7 @@ class data_options:
         return iterations[0] + 1
 
     def __init__(self,use_default_folder="y",type="VR_DATA",default_data=False,computer="laptop"):
+        self.default_data=default_data
         if computer == "laptop":
             if type == "VR_DATA":
                 if use_default_folder == "y":
@@ -67,7 +68,7 @@ class data_options:
 
     def get_data(self):
         files_list=[]
-        if default_data == True:
+        if self.default_data == True:
             for files in os.listdir(self.save_dir):
                 if files == "default.dat":
                     files_list.append(files)

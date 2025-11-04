@@ -18,7 +18,7 @@ from main_dir.Methods.VAE import VAE, Encoder, Decoder
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 
-data_ops = data_options(type="VR_DATA")
+data_ops = data_options(type="VR_DATA",default_data=True)
 model_folder_path = "C:/Users/Matth/Documents/Leiden University/Project/models/VAE/"
 history_path = "C:/Users/Matth/Documents/Leiden University/Project/Histories/VAE/"
 
@@ -139,7 +139,6 @@ def predict_from_x(input_model, output_model, regressor, x_tensor, device):
 
 def main():
     data = data_ops.get_data()
-    data = data.dropna(subset=["matm","mdeep"])
     # could also use data = data.sample(frac=1).reset_index(drop=True)
     data = shuffle(data,random_state=42)
     data = data.rename(columns={"req": "radius", "Teq": "temp"})
@@ -163,7 +162,7 @@ def main():
     NN_history_name = f"NN_history_{NN_iteration}.csv"
     output_history_name = f"output_history_{output_iteration}.csv"
 
-    y_col = ["m_core", "matm", "mdeep",'zatm', 'zdeep']
+    y_col = ["m_core","ice_mass", "rock_mass",'h_he_mass']
     x_col = ["mass","radius","temp"]
 
     train_x, train_y = data_ops.get_xy(train, y_col, x_col)

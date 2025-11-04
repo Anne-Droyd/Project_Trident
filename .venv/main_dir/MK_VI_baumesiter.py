@@ -125,6 +125,7 @@ class MK_VI_MDN():
     def __init__(self,
                  input_names,
                  output_names,
+                 default_data=False,
                  dataset="VR_DATA", #currently only support "VR_DATA" or "BAU", will include "live" later as default
                  scaler = StandardScaler(),
                  file_prefix="MDN", # What the model file name will contain
@@ -140,10 +141,9 @@ class MK_VI_MDN():
         self.file_prefix = file_prefix
         assert dataset == "VR_DATA" or dataset == "BAU", "Unknown dataset"
 
-        self.data_ops = data_options(type=dataset)
+        self.data_ops = data_options(type=dataset,default_data=default_data)
         self.data = self.data_ops.get_data()
 
-        self.data = self.data.dropna(subset=["matm", "mdeep"])
 
         if dataset=="VR_DATA":
             self.data.rename(columns={"req": "radius", "Teq": "temp"})
@@ -343,6 +343,19 @@ class MK_VI_MDN():
         pi = np.apply_along_axis(softmax, 1, pi, temperature=1)
         return mu, sigma, pi
 
+    def plot_pdf(self,mu,sigma,pi,means,mu_mixture,mu_top5_avg,var_mixture,top5_mus):
+        test=pd.DataFrame(self.y_scaler.inverse_transform(self.test_y))
+        plots.plot_single_pdf(mu, sigma, pi, self.y_col,
+                              test_y=test,
+                              mean_pred=means,
+                              means=mu_mixture,
+                              mu_map=mu_top5_avg,
+                              vars=var_mixture,
+                              top5_mus=top5_mus,
+                              idx=np.random.randint(0, mu.shape[0]))
+    def plot_real_v_pred(self,mean):
+        test = pd.DataFrame(self.y_scaler.inverse_transform(self.test_y))
+        plots.plot_predicted_vs_real_scatter(mean, test)
 def main():
 
     epochs = 50
@@ -355,17 +368,16 @@ def main():
     bias_init="zeros"
     activation="relu"
 
-    y_col = ["mdeep"]
+    y_col = ["m_core","ice_mass","rock_mass","h_he_mass"]
     x_col = ["mass","req","Teq"]
 
-    optimizer = Adam(learning_rate=lr,clipvalue=1)
+    optimizer = Adam(learning_rate=lr)
 
-    main_mdn_class = MK_VI_MDN(input_names=x_col,output_names=y_col)
+    main_mdn_class = MK_VI_MDN(input_names=x_col,output_names=y_col,default_data=True)
 
-    print(main_mdn_class.train_x)
-    print(main_mdn_class.train_y)
 
-    model, history = main_mdn_class.train_model(epochs=1,learning_rate=1e-6)
+
+    model, history = main_mdn_class.train_model(epochs=epochs,learning_rate=0.001)
 
     mu, sigma, pi = main_mdn_class.prediction(model)
 
@@ -393,15 +405,8 @@ def main():
     # Now calculate variance
     var_mixture = np.sum(pi[:, :, np.newaxis] * (sigma ** 2 + (mu - mu_mixture_broadcasted) ** 2), axis=1)
 
-    plots.plot_single_pdf(mu, sigma, pi, y_col,
-                          test_y= test_y,
-                          mean_pred= means,
-                          means= mu_mixture,
-                          mu_map=mu_top5_avg,
-                          vars= var_mixture,
-                          top5_mus=top5_mus,
-                          idx= np.random.randint(0, mu.shape[0]))
-
+    main_mdn_class.plot_pdf(mu,sigma,pi,means,mu_mixture,mu_top5_avg,var_mixture,top5_mus)
+    main_mdn_class.plot_real_v_pred(means)
     # plt.scatter(range(num_mixtures_1),pi[np.random.randint(0, mu.shape[0]),:])
     # plt.ylabel()
     # plt.show()
