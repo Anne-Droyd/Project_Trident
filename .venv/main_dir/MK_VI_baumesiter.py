@@ -4,6 +4,7 @@ Clean version
 import warnings
 from importlib.metadata import metadata
 from tkinter.filedialog import askopenfile, askopenfilename
+from sklearn.metrics import mean_squared_error, r2_score
 
 import h5py
 import json
@@ -125,7 +126,7 @@ class MK_VI_MDN():
     def __init__(self,
                  input_names,
                  output_names,
-                 default_data=False,
+                 default_data=True,
                  dataset="VR_DATA", #currently only support "VR_DATA" or "BAU", will include "live" later as default
                  scaler = StandardScaler(),
                  file_prefix="MDN", # What the model file name will contain
@@ -143,6 +144,8 @@ class MK_VI_MDN():
 
         self.data_ops = data_options(type=dataset,default_data=default_data)
         self.data = self.data_ops.get_data()
+        #smoke test
+        # self.data=self.data[:50]
 
 
         if dataset=="VR_DATA":
@@ -196,8 +199,8 @@ class MK_VI_MDN():
 
 
     def train_model(self,
-                    number_mixtures=20,
-                    number_layers=4,
+                    number_mixtures=10,
+                    number_layers=1,
                     number_nodes=60,
                     activation="relu",
                     bias_initalizer = None,
@@ -356,12 +359,52 @@ class MK_VI_MDN():
     def plot_real_v_pred(self,mean):
         test = pd.DataFrame(self.y_scaler.inverse_transform(self.test_y))
         plots.plot_predicted_vs_real_scatter(mean, test)
+
+    def plot_predicted_vs_real_hist(self,predictions,plot_path):
+
+        for idx, col in enumerate(self.y_col):
+            iter = self.data_ops.get_iteration(plot_path, file_prefix=col)
+            fig = plt.figure(figsize=(6, 4))
+            mse = mean_squared_error(self.test_y[:, idx], predictions[:, idx])
+            print(f'{col} Mean Squared Error: {mse}')
+
+            r2 = r2_score(self.test_y[:, idx], predictions[:, idx])
+            print(f'{col} R-squared: {r2}')
+            min_val = self.test_y[:, idx].min()
+            max_val = self.test_y[:, idx].max()
+            h = plt.hist2d(self.test_y[:, idx], predictions[:, idx], bins=100, cmap="jet", cmax=100, density=True)
+            fig.colorbar(h[3], label="Density")
+            plt.plot([min_val, max_val], [min_val, max_val], 'k--', lw=1, label='Perfect prediction')
+            plt.title(f'Real vs predicted values for {col}')
+            image_path = plot_path + f'real_vs_pred_{col}_{iter}.png'
+            plt.text(
+                0.05, 0.95, f'$R^2 = {r2:.3f}$',
+                transform=plt.gca().transAxes,  # place relative to axes (0–1)
+                fontsize=12,
+                verticalalignment='top',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray')
+            )
+            plt.text(
+                0.05, 0.85, f'$MSE = {mse:.3f}$',
+                transform=plt.gca().transAxes,  # place relative to axes (0–1)
+                fontsize=12,
+                verticalalignment='top',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray')
+            )
+            plt.ylim(min_val, max_val)
+            plt.xlim(min_val, max_val)
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(image_path)
+            plt.show()
+
 def main():
 
-    epochs = 50
+    #smoke test
+    epochs = 100
     lr = 0.001
     num_mixtures_1 = 20
-    batch_size_1 = 1000
+    batch_size_1 = 128
     num_hidden_nodes_1 = 60
 
     #model params
@@ -369,7 +412,7 @@ def main():
     activation="relu"
 
     y_col = ["m_core","ice_mass","rock_mass","h_he_mass"]
-    x_col = ["mass","req","Teq"]
+    x_col = ["mass","radius","temp"]
 
     optimizer = Adam(learning_rate=lr)
 
@@ -377,36 +420,43 @@ def main():
 
 
 
-    model, history = main_mdn_class.train_model(epochs=epochs,learning_rate=0.001)
+    model, history = main_mdn_class.train_model(number_mixture = num_mixtures_1,batch_size=batch_size_1,
+                                                number_layers=1,number_nodes=num_hidden_nodes_1,
+                                                epochs=epochs,learning_rate=0.001)
 
     mu, sigma, pi = main_mdn_class.prediction(model)
+    plot_path = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/MDN/'
+    #smoke test
+    samples = plots.sample_from_mixture(mu, sigma, pi, 500)
+    pred_mean = np.mean(samples, axis=1)
+    main_mdn_class.plot_predicted_vs_real_hist(pred_mean, plot_path)
+    #
+    #
+    #
+    #
+    # means = np.sum(pi[..., np.newaxis] * mu, axis=1)
+    # map_indices = np.argsort(pi, axis=1)[:,-1]
+    #
+    # top5_indices = np.argsort(pi, axis=1)[:, -5:]
+    # batch_indices = np.arange(mu.shape[0])[:, None]  # shape (n_samples, 1)
+    # top5_mus = mu[batch_indices, top5_indices]  # shape (n_samples, 5, output_dim)
+    #
+    # # Step 3: Average them
+    # mu_top5_avg = np.mean(top5_mus, axis=1)
+    # top5_pis = pi[batch_indices, top5_indices]  # shape (n_samples, 5)
+    # weighted_avg = np.sum(top5_mus * top5_pis[..., None], axis=1) / np.sum(top5_pis, axis=1, keepdims=True)
+    #
+    # mu_map = np.array([mu[i, idx, :] for i, idx in enumerate(map_indices)])
+    # mu_mixture = np.sum(pi[:, :, np.newaxis] * mu, axis=1)  # Shape: (17506, 5)
+    #
+    # # Broadcasting mu_mixture to (17506, 120, 5) for element-wise subtraction with mu
+    # mu_mixture_broadcasted = mu_mixture[:, np.newaxis, :]  # Shape: (17506, 1, 5)
+    #
+    # # Now calculate variance
+    # var_mixture = np.sum(pi[:, :, np.newaxis] * (sigma ** 2 + (mu - mu_mixture_broadcasted) ** 2), axis=1)
 
-
-
-
-    means = np.sum(pi[..., np.newaxis] * mu, axis=1)
-    map_indices = np.argsort(pi, axis=1)[:,-1]
-
-    top5_indices = np.argsort(pi, axis=1)[:, -5:]
-    batch_indices = np.arange(mu.shape[0])[:, None]  # shape (n_samples, 1)
-    top5_mus = mu[batch_indices, top5_indices]  # shape (n_samples, 5, output_dim)
-
-    # Step 3: Average them
-    mu_top5_avg = np.mean(top5_mus, axis=1)
-    top5_pis = pi[batch_indices, top5_indices]  # shape (n_samples, 5)
-    weighted_avg = np.sum(top5_mus * top5_pis[..., None], axis=1) / np.sum(top5_pis, axis=1, keepdims=True)
-
-    mu_map = np.array([mu[i, idx, :] for i, idx in enumerate(map_indices)])
-    mu_mixture = np.sum(pi[:, :, np.newaxis] * mu, axis=1)  # Shape: (17506, 5)
-
-    # Broadcasting mu_mixture to (17506, 120, 5) for element-wise subtraction with mu
-    mu_mixture_broadcasted = mu_mixture[:, np.newaxis, :]  # Shape: (17506, 1, 5)
-
-    # Now calculate variance
-    var_mixture = np.sum(pi[:, :, np.newaxis] * (sigma ** 2 + (mu - mu_mixture_broadcasted) ** 2), axis=1)
-
-    main_mdn_class.plot_pdf(mu,sigma,pi,means,mu_mixture,mu_top5_avg,var_mixture,top5_mus)
-    main_mdn_class.plot_real_v_pred(means)
+    # main_mdn_class.plot_pdf(mu,sigma,pi,means,mu_mixture,mu_top5_avg,var_mixture,top5_mus)
+    # main_mdn_class.plot_real_v_pred(means)
     # plt.scatter(range(num_mixtures_1),pi[np.random.randint(0, mu.shape[0]),:])
     # plt.ylabel()
     # plt.show()
@@ -420,8 +470,7 @@ def main():
     # plots.plot_single_pdf(mu, sigma, pi, y_col, test_y, mu_mixture, var_mixture, idx=5)
 
     # plots.plot_mu_vs_real_with_errorbars(mu_mixture, var_mixture, test_y, y_col)
-    # samples = plots.sample_from_mixture(mu,sigma, pi,100)
-    # plots.plot_predicted_vs_real_hist(samples, test_y,y_col)
+
 
     # plots.plot_predicted_vs_real_scatter(best_mean,test_y)
     # plots.plot_predicted_vs_real_scatter(samples,test_y)

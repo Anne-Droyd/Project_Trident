@@ -1,6 +1,10 @@
+'''
+probabilistic random forest
+'''
 import os
 import json
 import joblib
+from quantile_forest import RandomForestQuantileRegressor
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -19,11 +23,11 @@ history_path = "C:/Users/Matth/Documents/Leiden University/Project/Histories/RF/
 plot_path = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/Random_forest/'
 
 def train_model(train_x,train_y):
-    regressor = RandomForestRegressor(n_estimators=200, max_depth=None, bootstrap=True, oob_score=True)
-    model = regressor.fit(train_x, train_y)
+    model = RandomForestQuantileRegressor(bootstrap=True,oob_score=True,n_jobs=4)
+    model.fit(X=train_x, y=train_y)
     return model
 
-def main(default_model = True,train_new_model = False, save_tree_image = False):
+def main(default_model = False,train_new_model = True, save_tree_image = False):
     data = data_ops.get_data()
     data = shuffle(data, random_state=42)
     # data = data[:15000]
@@ -59,8 +63,8 @@ def main(default_model = True,train_new_model = False, save_tree_image = False):
             json.dump(metadata, f, indent=4)
     else:
         if default_model == True:
-            model_name = f"RF_input_model_{4}.joblib"
-            meta_name = f"RF_input_model_{4}_metadata.json"
+            model_name = f"RF_input_model_{6}.joblib"
+            meta_name = f"RF_input_model_{6}_metadata.json"
         else:
             model_name = f"RF_input_model_{iteration-1}.joblib"
             meta_name = f"RF_input_model_{iteration-1}_metadata.json"
@@ -101,21 +105,24 @@ def main(default_model = True,train_new_model = False, save_tree_image = False):
         plt.show()
         print(f'Individual tree image created and saved to :{tree_path}')
 
-    oob_score = model.oob_score_
-    print(f'Out-of-Bag Score: {oob_score}')
+    oob_score = getattr(model, "oob_score_", None)
+    if oob_score is not None:
+        print(f'Out-of-Bag Score: {oob_score}')
 
-    predictions = model.predict(test_x)
+    predictions = model.predict(test_x, quantiles=[0.16, 0.5, 0.84])
+
+    print(predictions.shape)
 
     for idx, col in enumerate(y_col):
         fig = plt.figure(figsize=(6,4))
-        mse = mean_squared_error(test_y[col], predictions[:,idx])
+        mse = mean_squared_error(test_y[col], predictions[:,idx,1])
         print(f'{col} Mean Squared Error: {mse}')
 
-        r2 = r2_score(test_y[col], predictions[:,idx])
+        r2 = r2_score(test_y[col], predictions[:,idx,1])
         print(f'{col} R-squared: {r2}')
-        min_val = min(test_y[col].min(), predictions[:, idx].min())
-        max_val = max(test_y[col].max(), predictions[:, idx].max())
-        h = plt.hist2d(test_y[col], predictions[:,idx], bins=100, cmap="viridis", cmax=100, density=True)
+        min_val = min(test_y[col].min(), predictions[:, idx,1].min())
+        max_val = max(test_y[col].max(), predictions[:, idx,1].max())
+        h = plt.hist2d(test_y[col], predictions[:,idx,1], bins=100, cmap="viridis", cmax=100,density=False)
         fig.colorbar(h[3], label="Density")
         plt.plot([min_val, max_val], [min_val, max_val],'k--',lw=1,label='Perfect prediction')
         plt.title(f'Real vs predicted values for {col}')

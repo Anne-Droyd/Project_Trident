@@ -17,6 +17,25 @@ import torch.optim as optim
 from FrEIA.framework import InputNode, ConditionNode, OutputNode, Node, ReversibleGraphNet
 from FrEIA.modules import GLOWCouplingBlock, PermuteRandom
 
+class EarlyStoppingAndCheckpoint:
+    def __init__(self, patience=10, save_path=None):
+        self.patience = patience
+        self.save_path = save_path
+        self.best_loss = float('inf')
+        self.counter = 0
+
+    def step(self, model, val_loss):
+        if val_loss < self.best_loss:
+            self.best_loss = val_loss
+            self.counter = 0
+            if self.save_path is not None:
+                torch.save(model.state_dict(), self.save_path)
+        else:
+            self.counter += 1
+
+        # return True if training should stop
+        return self.counter >= self.patience
+
 class ConditionalINN(nn.Module):
     def __init__(self, y_dim, x_dim, hidden_dim=128, n_blocks=4, lr=1e-3, device=None):
         super().__init__()
@@ -101,16 +120,60 @@ class ConditionalINN(nn.Module):
         y_samples = self.predict(x_cond, n_samples=20)
         return y_samples.mean(dim=0)
 
+from sklearn.metrics import mean_squared_error, r2_score
+
+def plot_2d_hist(predictions,test_y,y_col,plot_path):
+
+    for idx, col in enumerate(y_col):
+        iter = data_ops.get_iteration(plot_path,file_prefix=col)
+        fig = plt.figure(figsize=(6,4))
+        print("predictions shape:", predictions.shape)
+        print("test_y shape:", test_y.shape)
+        mse = mean_squared_error(test_y[:,idx], predictions[:,idx])
+        print(f'{col} Mean Squared Error: {mse}')
+
+        r2 = r2_score(test_y[:,idx], predictions[:,idx])
+        print(f'{col} R-squared: {r2}')
+        min_val = min(test_y[:,idx].min())
+        max_val = max(test_y[:,idx].max())
+        h = plt.hist2d(test_y[:,idx], predictions[:,idx], bins=100, cmap="jet", cmax=100, density=True)
+        fig.colorbar(h[3], label="Density")
+        plt.plot([min_val, max_val], [min_val, max_val],'k--',lw=1,label='Perfect prediction')
+        plt.title(f'Real vs predicted values for {col}')
+        image_path = plot_path+f'real_vs_pred_{col}_{iter}.png'
+        plt.text(
+            0.05, 0.95, f'$R^2 = {r2:.3f}$',
+            transform=plt.gca().transAxes,  # place relative to axes (0–1)
+            fontsize=12,
+            verticalalignment='top',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray')
+        )
+        plt.text(
+            0.05, 0.85, f'$MSE = {mse:.3f}$',
+            transform=plt.gca().transAxes,  # place relative to axes (0–1)
+            fontsize=12,
+            verticalalignment='top',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='gray')
+        )
+        plt.ylim(min_val,max_val)
+        plt.xlim(min_val, max_val)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(image_path)
+        plt.show()
+
 def main():
     data = data_ops.get_data()
     data = shuffle(data, random_state=42)
-    data = data[:1500]
+    # data = data[:1500]
     train, test, valid = data_ops.partition_data(data, train_frac=0.8, test_frac=0.1, valid_frac=0.1)
     iteration = data_ops.get_iteration(model_folder_path, "NF")
     print("Current input model iteration #",iteration)
+
     model_save_name = f"NF_input_model_{iteration}.h5"
     history_name = f"NF_history_{iteration}.csv"
-    y_col = ["m_core", "ice_mass"]#, "ice_mass", "rock_mass", 'h_he_mass']
+    plot_path = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/Normalizing_flow/'
+    y_col = ["m_core", "ice_mass", "rock_mass", 'h_he_mass']
     x_col = ["mass", "radius", "temp"]
     train_x, train_y = data_ops.get_xy(train, y_col, x_col)
     test_x, test_y = data_ops.get_xy(test, y_col, x_col)
@@ -133,12 +196,24 @@ def main():
 
     cinn = ConditionalINN(y_dim=Y_train.shape[1], x_dim=X_train.shape[1])
 
-    n_epochs = 500
-    for epoch in range(1,n_epochs+1):
+    n_epochs = 100
+    callback = EarlyStoppingAndCheckpoint(
+        patience=10,
+        save_path=model_folder_path + model_save_name  # save best model
+    )
+
+    for epoch in range(1, n_epochs + 1):
         train_loss = cinn.train_step(X_train, Y_train)
         val_loss = cinn.val_step(X_valid, Y_valid)
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+
+        print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+
+        stop = callback.step(cinn, val_loss)
+        if stop:
+            print("Early stopping triggered.")
+            break
+
+    torch.save(cinn.state_dict(),model_folder_path+model_save_name)
 
     # Predict deterministically
     y_pred = cinn.predict_deterministic(X_valid[:1])
@@ -177,6 +252,7 @@ def main():
     y_samples = y_scaler.inverse_transform(y_samples.numpy())
     print("Sampled ys:", y_samples)
 
+    plot_2d_hist(y_pred_original,y_true_original,y_col,plot_path=plot_path)
 
 
 main()

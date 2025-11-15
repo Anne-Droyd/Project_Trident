@@ -9,6 +9,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from random import shuffle
+
 from sklearn.manifold import TSNE
 from matplotlib.ticker import MaxNLocator
 from tkinter.filedialog import askdirectory
@@ -23,6 +24,15 @@ def data_prep(dataset, input_columns = None, target_column = None, scaling = "st
     if target_column == None:
         raise TypeError("Need a target column")
 
+    if input_columns is None:
+        input_columns = dataset.select_dtypes(include=[np.number]).columns.tolist()
+        if target_column in input_columns:
+            input_columns.remove(target_column)
+
+    if scaling is None:
+        target_data = dataset[target_column]
+        return input_columns, target_data, input_columns, target_column
+
     scaling = scaling.lower()
     if scaling == "standard":
         scaler = StandardScaler()
@@ -33,10 +43,7 @@ def data_prep(dataset, input_columns = None, target_column = None, scaling = "st
     else:
         raise TypeError("Unknown scaling method")
 
-    if input_columns is None:
-        input_columns = dataset.select_dtypes(include=[np.number]).columns.tolist()
-        if target_column in input_columns:
-            input_columns.remove(target_column)
+
 
     input_data_scaled = scaler.fit_transform(dataset[input_columns])
     target_data = dataset[target_column]
@@ -177,14 +184,33 @@ def plot_histogram(X,x_labels):
         plt.savefig(path)
 
 def corner_plot(X_Y_df):
+    savedir = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/corner_plot.jpg'
     corner.corner(X_Y_df,labels=X_Y_df.columns,show_titles=True)
+    plt.savefig(savedir)
+    plt.show()
+
+def plot_X_v_Y_subplots(x,y,x_label=None,y_label=None,title=None,save_dir=None):
+    #automatically make a 4 plot figure, where there are 4 y values 1 x value
+    fig,axes = plt.subplots(nrows=2,ncols=2,figsize=(8,8))
+    axes=axes.flatten()
+    for plot in range(4):
+        axes[plot].scatter(x,y[y_label[plot]])
+        axes[plot].set(xlabel=x_label,ylabel=y_label[plot])
+        axes[plot].set_title(y_label[plot])
+    fig.suptitle(title)
+    save_dir += f'{title}.jpg'
+    fig.tight_layout()
+    plt.savefig(save_dir)
     plt.show()
 
 def main():
-    data_ops = data_options(type="VR_DATA")
+    data_ops = data_options(type="VR_DATA",default_data=True)
     data = data_ops.get_data()
     data = data.sample(frac=1)
-    data = data[:2500]
+    # corner_plot(data)
+    data = data.loc[data['p_ppt']>=4.9]
+    data = data.loc[data['p_ppt']<=5.1]
+    # data = data[:2500]
     x_col_1 = ["mass","radius","temp"]
     x_col_2 = ["mass","radius","temp","k2"]
     x_col_3 = ['mass', 'radius', 'temp', 'density', 'surface_gravity','mass_radius_ratio', 'temp_density_interaction']
@@ -199,36 +225,40 @@ def main():
 
     methods = methods_1
 
-    save_dir = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots'
+    save_dir = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/'
 
     #just storing column names for lazy reasons
-    x_col = x_col_5
+    x_col = x_col_1
     y_columns = y_col_0
 
     n=0
 
     X, Y, in_cols, out_cols = data_prep(data, x_col, y_columns)
     cols=in_cols+out_cols
-    joined = pd.DataFrame(np.hstack((X,Y)),columns=cols)
+    # joined = pd.DataFrame(np.hstack((X,Y)),columns=cols)
+    # print(X[:,1])
+    # plot_X_v_Y_subplots(X[:, 1],Y,x_label='radius',y_label=y_columns,title='radius vs parameters of interest reduced ppt',save_dir=save_dir)
+    # plot_X_v_Y_subplots(X[:, 3], Y, x_label='k2', y_label=y_columns, title='k2 vs parameters of interest reduced ppt',
+    #                     save_dir=save_dir)
 
     #simple rep
     # plot_histogram(data.loc[:,x_col],x_col)
     # plot_histogram(Y,out_cols)
 
-    corner_plot(joined)
+    #
 
     #dimension reduction and higher dimension rep
-    # scaler = RobustScaler()
-    # Y = scaler.fit_transform(Y)
-    # Y = pd.DataFrame(Y,columns=y_columns)
-    # method_tracker = {}
-    # for method in methods:
-    #     two_d_rep = data_reduction_method(X, method)
-    #     method_tracker[method] = two_d_rep
-    # for y_col in y_columns:
-    #     y = Y[y_col]
-    #
-    #     plot_comparison_of_reductions(method_tracker,y,y_col,save_dir=save_dir)
+    scaler = RobustScaler()
+    Y = scaler.fit_transform(Y)
+    Y = pd.DataFrame(Y,columns=y_columns)
+    method_tracker = {}
+    for method in methods:
+        two_d_rep = data_reduction_method(X, method)
+        method_tracker[method] = two_d_rep
+    for y_col in y_columns:
+        y = Y[y_col]
+
+        plot_comparison_of_reductions(method_tracker,y,y_col,save_dir=save_dir)
 
         # plot_3D_rep_data(X[:,:3],y,in_cols[:3],y_col)
 
