@@ -37,24 +37,28 @@ class EarlyStoppingAndCheckpoint:
         return self.counter >= self.patience
 
 class ConditionalINN(nn.Module):
-    def __init__(self, y_dim, x_dim, hidden_dim=128, n_blocks=4, lr=1e-3, device=None):
+    def __init__(self, y_dim, x_dim, hidden_dim=256, n_blocks=8, lr=1e-3, device=None):
         super().__init__()
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.y_dim = y_dim
         self.x_dim = x_dim
+        self.hidden_dim = hidden_dim
 
-        # --- build the conditional INN ---
         self.model = self.build_cinn(y_dim, x_dim, hidden_dim, n_blocks).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-5)
+        self.cond_net = nn.Sequential(
+            nn.Linear(x_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, x_dim)
+        )
 
     def subnet_fc(self, c_in, c_out):
-        """Small MLP used inside each coupling block."""
         return nn.Sequential(
-            nn.Linear(c_in, 128),
+            nn.Linear(c_in, self.hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, c_out)
+            nn.Linear(self.hidden_dim, c_out)
         )
 
     def build_cinn(self, y_dim, x_dim, hidden_dim, n_blocks):
@@ -79,11 +83,13 @@ class ConditionalINN(nn.Module):
     def train_step(self, x_cond, y_target):
         self.optimizer.zero_grad()
         y_target = y_target.to(self.device)
-        x_cond = torch.tensor(x_cond, dtype=torch.float32).to(self.device)
+        x_cond = x_cond.to(self.device)
 
-        z, log_jac_det = self.model(y_target, c=[x_cond])
-        loss = 0.5 * torch.sum(z**2) - torch.sum(log_jac_det)
-        loss = loss / y_target.shape[0]
+        x_emb = self.cond_net(x_cond)
+
+        z, log_jac_det = self.model(y_target, c=[x_emb])
+        loss = (0.5 * z.pow(2).sum(dim=1) - log_jac_det).mean()
+
         loss.backward()
         self.optimizer.step()
         return loss.item()
@@ -92,13 +98,13 @@ class ConditionalINN(nn.Module):
     def val_step(self, x_cond, y_target):
         self.model.eval()
         y_target = y_target.to(self.device)
-        x_cond = torch.tensor(x_cond, dtype=torch.float32).to(self.device)
+        x_cond = x_cond.to(self.device)
 
-        z, log_jac_det = self.model(y_target, c=[x_cond])
-        loss = 0.5 * torch.sum(z ** 2) - torch.sum(log_jac_det)
-        loss = loss / y_target.shape[0]
+        x_emb = self.cond_net(x_cond)
+        z, log_jac_det = self.model(y_target, c=[x_emb])
+        loss = (0.5 * z.pow(2).sum(dim=1) - log_jac_det).mean()
 
-        self.model.train()  # switch back to train mode
+        self.model.train()
         return loss.item()
 
     def predict(self, x_cond, n_samples=1):
@@ -116,9 +122,12 @@ class ConditionalINN(nn.Module):
         return y_pred.cpu()
 
     def predict_deterministic(self, x_cond):
-        """Most likely prediction (mean of the conditional)."""
-        y_samples = self.predict(x_cond, n_samples=20)
-        return y_samples.mean(dim=0)
+        with torch.no_grad():
+            x_cond = torch.tensor(x_cond, dtype=torch.float32).to(self.device)
+            x_emb = self.cond_net(x_cond.unsqueeze(0))
+            z = torch.zeros(1, self.y_dim).to(self.device)
+            y_pred, _ = self.model(z, c=[x_emb], rev=True)
+        return y_pred.cpu().squeeze(0)
 
 from sklearn.metrics import mean_squared_error, r2_score
 
@@ -173,7 +182,7 @@ def main():
     model_save_name = f"NF_input_model_{iteration}.h5"
     history_name = f"NF_history_{iteration}.csv"
     plot_path = 'C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/plots/Normalizing_flow/'
-    y_col = ["m_core", "ice_mass", "rock_mass", 'h_he_mass']
+    y_col = ["m_core"]
     x_col = ["mass", "radius", "temp"]
     train_x, train_y = data_ops.get_xy(train, y_col, x_col)
     test_x, test_y = data_ops.get_xy(test, y_col, x_col)
@@ -194,19 +203,37 @@ def main():
     X_valid = torch.tensor(valid_x, dtype=torch.float32)
     Y_valid = torch.tensor(valid_y, dtype=torch.float32)
 
-    cinn = ConditionalINN(y_dim=Y_train.shape[1], x_dim=X_train.shape[1])
+    n_epochs = 800
 
-    n_epochs = 100
+    cinn = ConditionalINN(
+        y_dim=Y_train.shape[1],
+        x_dim=X_train.shape[1],
+        hidden_dim=64,
+        n_blocks=4,
+        lr=5e-4
+    )
+
     callback = EarlyStoppingAndCheckpoint(
         patience=10,
         save_path=model_folder_path + model_save_name  # save best model
     )
+    from torch.utils.data import DataLoader, TensorDataset
+
+    train_loader = DataLoader(
+        TensorDataset(X_train, Y_train),
+        batch_size=512,
+        shuffle=True
+    )
 
     for epoch in range(1, n_epochs + 1):
-        train_loss = cinn.train_step(X_train, Y_train)
+        epoch_train_loss = 0
+        for xb, yb in train_loader:
+            epoch_train_loss += cinn.train_step(xb, yb)
+
+        epoch_train_loss /= len(train_loader)
         val_loss = cinn.val_step(X_valid, Y_valid)
 
-        print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(f"Epoch {epoch:03d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {val_loss:.4f}")
 
         stop = callback.step(cinn, val_loss)
         if stop:
