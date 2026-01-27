@@ -26,25 +26,25 @@ data["ice_mass"] = (data["zatm0"] * data["matm"] + data["zdeep0"] * data["mdeep"
 data["rock_mass"] = (data["zatm1"] * data["matm"] + data["zdeep1"] * data["mdeep"])
 data["h_he_mass"] = (1 - (data['m_core'] + data["rock_mass"] + data["ice_mass"]))
 
-data["ice_mass"]  = np.log(data['ice_mass']/(data['m_core']*data['mass']))
-data["rock_mass"] = np.log(data['rock_mass']/(data['m_core']*data['mass']))
-data["h_he_mass"] = np.log(data['h_he_mass']/(data['m_core']*data['mass']))
+# data["ice_mass"]  = np.log(data['ice_mass']/(data['m_core']*data['mass']))
+# data["rock_mass"] = np.log(data['rock_mass']/(data['m_core']*data['mass']))
+# data["h_he_mass"] = np.log(data['h_he_mass']/(data['m_core']*data['mass']))
 
 # data['m_core']  = data['mass']/(1+(10**data['log_m_mantle_core']+10**data['log_m_atmosphere_core']+10**data['log_m_water_core']))
 # data['m_mantle']= 10**data['log_m_mantle_core']*data['m_core']
 # data['matm']    = 10**data['log_m_atmosphere_core']*data['m_core']
 # data['m_water'] = 10**data['log_m_water_core']*data['m_core']
 
-data['density'] = data['mass'] / ((4/3)*np.pi*data['radius']**3)  # Bulk density
-data['surface_gravity'] = Grav_cons*data['mass'] / (data['radius']**2)
-data['mass_radius_ratio'] = 0.56*data['mass']**(0.67) / data['radius']
-data['temp_density_interaction'] = data['temp'] * data['density']
+# data['density'] = data['mass'] / ((4/3)*np.pi*data['radius']**3)  # Bulk density
+# data['surface_gravity'] = Grav_cons*data['mass'] / (data['radius']**2)
+# data['mass_radius_ratio'] = 0.56*data['mass']**(0.67) / data['radius']
+# data['temp_density_interaction'] = data['temp'] * data['density']
 
 # columns=['mass','radius','temp','ice_mass','rock_mass','h_he_mass','density','surface_gravity','mass_radius_ratio','temp_density_interaction']
 
 columns = data.columns.tolist()
 
-file_outname= "C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/Data/test_extra_params_m_core_encoding.dat"
+file_outname= "C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/Data/T0_data_set.dat"
 # file_outname= "C:/Users/Matth/Documents/Leiden University/Project/Masters Project Main/ExoMDN-main/ExoMDN-main/data/training_demo/default.dat"
 data.to_csv(file_outname,index=False,sep="\t",columns=columns,header=True)
 

@@ -95,8 +95,20 @@ class data_options:
             data = pd.read_csv(path, delimiter="\t")
         return data
 
-    def partition_data(self,data,train_frac=0.6,test_frac=0.2,valid_frac=0.2,seed=42):
-        train, test, valid = np.split(data.sample(frac=1,random_state=seed),[int(train_frac*len(data)),int((1-test_frac)*len(data))])
+    def partition_data(self,data,train_frac=0.6,test_frac=0.4,valid_frac=None,seed=42):
+        total = train_frac + test_frac + valid_frac
+        if not np.isclose(total, 1.0):
+            raise ValueError(f"Fractions must sum to 1. Got {total}")
+
+        data = data.sample(frac=1, random_state=seed).reset_index(drop=True)
+        n = len(data)
+
+        n_train = int(train_frac * n)
+        n_test = int(test_frac * n)
+
+        train = data.iloc[:n_train]
+        test = data.iloc[n_train:n_train + n_test]
+        valid = data.iloc[n_train + n_test:]
 
         return train, test, valid
 

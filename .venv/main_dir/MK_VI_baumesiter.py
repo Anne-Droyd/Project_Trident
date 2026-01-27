@@ -411,7 +411,7 @@ def main():
     bias_init="zeros"
     activation="relu"
 
-    y_col = ["m_core","ice_mass","rock_mass","h_he_mass"]
+    y_col = ["m_core"]
     x_col = ["mass","radius","temp"]
 
     optimizer = Adam(learning_rate=lr)

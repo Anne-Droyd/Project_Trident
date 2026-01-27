@@ -1,0 +1,3 @@
+planet_name mass    mass_err1    mass_err2      radius  radius_err1  radius_err2    temp    k2      k2_err1  k2_err2
+GJ436b      23.168  0.7945       0.7945         4.22    0.092        0.103          669     0.4     0.4      0.4
+Neptune     17.147  0.0006       0.0006         3.882   0.004        0.004                  0.42    0.04     0.04
